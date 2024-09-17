@@ -21,7 +21,7 @@ DB_POOL_CONFIG = {
     'maxsize': 100,  # Adjust this based on your needs
 }
 
-# RabbitMQ configuration
+# RabbitMQ configurations
 RABBITMQ_CONFIG = {
     'host': 'mqtt.savvyiot.co.za',  # Remove 'https://' as it's not needed for AMQP
     'port': 5672,

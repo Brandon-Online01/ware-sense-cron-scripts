@@ -1,0 +1,3 @@
+aio_pika
+aiomysql
+asyncio
