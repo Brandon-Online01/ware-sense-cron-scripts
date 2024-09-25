@@ -1,15 +1,24 @@
+import pytz
+import json
+import logging
 import asyncio
 import aio_pika
 import aiomysql
-import json
-import datetime
-import logging
-import time
+from datetime import datetime
 
 # Set up logging
 logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# RabbitMQ configurations
+RABBITMQ_CONFIG = {
+    'host': 'mqtt.savvyiot.co.za',
+    'port': 5672,
+    'virtualhost': 'legend',
+    'login': 'legend',
+    'password': 'YvLC2tZhu5e6fafRmT4z'
+}
 
 # Database configuration
 DB_POOL_CONFIG = {
@@ -21,114 +30,99 @@ DB_POOL_CONFIG = {
     'maxsize': 100,  # Adjust this based on your needs
 }
 
-# RabbitMQ configurations
-RABBITMQ_CONFIG = {
-    'host': 'mqtt.savvyiot.co.za',  # Remove 'https://' as it's not needed for AMQP
-    'port': 5672,
-    'virtualhost': 'legend',
-    'login': 'legend',
-    'password': 'YvLC2tZhu5e6fafRmT4z'
-}
 
-# Global variables for message counting and rate calculation
-message_count = 0
-current_servicing_rate = 0
-message_count_lock = asyncio.Lock()
-servicing_rate_lock = asyncio.Lock()
-
-# Async connection pool for MySQL
-mysql_pool = None
-
-
-async def init_db_pool():
-    global mysql_pool
-    mysql_pool = await aiomysql.create_pool(**DB_POOL_CONFIG)
-
-
-async def handle_message(message: aio_pika.IncomingMessage):
-    global message_count
-    async with message.process():
-        try:
-            # Decode and parse the message body
-            message_body = json.loads(message.body.decode('utf-8'))
-
-            # Extract relevant information
-            data = message_body.get('data', [])
-            timestamp = message_body.get('timestamp')
-            rssi = message_body.get('rssi')
-
-            # Extract routing key information
-            routing_key = message.routing_key
-            routing_key_parts = routing_key.split('.')
-            owner_tag = routing_key_parts[0] if len(
-                routing_key_parts) > 0 else None
-            project_name = routing_key_parts[1] if len(
-                routing_key_parts) > 1 else None
-            machine_mac_address = routing_key_parts[2] if len(
-                routing_key_parts) > 2 else None
-            type_value = routing_key_parts[3] if len(
-                routing_key_parts) > 3 else None
-
-            # Extract data for MySQL insertion
-            for item in data:
-                cycle_time = item.get('cycle_time', 0)
-                cycle_completed_timestamp = item.get(
-                    'cycle_completed_timestamp', 0)
-                await insert_data_to_mysql(
-                    cycle_time, cycle_completed_timestamp, timestamp, rssi,
-                    message.delivery_tag, message.exchange, routing_key,
-                    owner_tag, project_name, machine_mac_address, type_value
-                )
-
-            # Increment message count
-            async with message_count_lock:
-                message_count += 1
-
-        except json.JSONDecodeError:
-            logger.warning("Received message with invalid JSON format")
-        except Exception as e:
-            logger.error(f"Error processing message: {e}")
-
-
-async def insert_data_to_mysql(cycle_time, cycle_completed_timestamp, event_timestamp, signal_strength,
-                               delivery_tag, exchange_type, routing_key, owner_tag, project_name,
-                               machine_mac_address, type_value):
-    async with mysql_pool.acquire() as conn:
-        async with conn.cursor() as cursor:
-            try:
-                # Convert timestamps and values for insertion
-                cycle_time_seconds = cycle_time / 1000 if cycle_time else 0
-                cycle_completed_human_time = datetime.datetime.fromtimestamp(cycle_completed_timestamp, tz=datetime.timezone(datetime.timedelta(hours=2))).strftime(
-                    '%a %b %d %Y %H:%M:%S GMT+0200 (South Africa Standard Time)') if cycle_completed_timestamp else 'none'
-                event_human_time = datetime.datetime.fromtimestamp(
-                    event_timestamp, tz=datetime.timezone(datetime.timedelta(hours=2))).strftime('%a %b %d %Y %H:%M:%S GMT+0200 (South Africa Standard Time)')
-
-                query = """
-                INSERT INTO queue_data (
-                    cycle_time, cycle_completed_timestamp, eventTimeStamp, signalStrength,
-                    deliveryTag, exchangeType, routingKey, ownerTag, projectName,
-                    machineMacAddress, type, servicingRate
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+async def save_data(pool, cleaned_data):  # Pass pool as an argument
+    try:
+        async with pool.acquire() as connection:
+            async with connection.cursor() as cursor:
+                # Define the SQL insert statement
+                insert_query = """
+                INSERT INTO queue_data (routingKey, deliveryTag, exchangeType, ownerTag, projectName,
+                                              machineMacAddress, type, cycle_time, eventTimeStamp,
+                                              signalStrength, cycle_completed_timestamp)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """
+                # Execute the insert statement with cleaned data
+                await cursor.execute(insert_query, (
+                    cleaned_data['routingKey'],
+                    cleaned_data['deliveryTag'],
+                    cleaned_data['exchangeType'],
+                    cleaned_data['ownerTag'],
+                    cleaned_data['projectName'],
+                    cleaned_data['machineMacAddress'],
+                    cleaned_data['type'],
+                    cleaned_data['cycle_time'],
+                    cleaned_data['eventTimeStamp'],
+                    cleaned_data['signalStrength'],
+                    cleaned_data['cycle_completed_timestamp']
+                ))
+                await connection.commit()  # Commit the transaction
+                logger.info(
+                    f"Data saved to the database successfully: {cleaned_data}")
+    except Exception as e:
+        logger.error(f"Failed to save data to the database: {e}")
 
-                # Get the current servicing rate
-                async with servicing_rate_lock:
-                    current_rate = current_servicing_rate
 
-                values = (
-                    cycle_time_seconds, cycle_completed_human_time, event_human_time, signal_strength,
-                    delivery_tag, exchange_type, routing_key, owner_tag, project_name,
-                    machine_mac_address, type_value, current_rate
-                )
+# Accept pool as an argument
+async def message_processor(message: aio_pika.IncomingMessage, pool):
+    try:
+        # Decode and parse the message body
+        message_body = json.loads(message.body.decode('utf-8'))
 
-                await cursor.execute(query, values)
-                await conn.commit()
+        # Clean and extract relevant data from the message body
+        data_entries = message_body.get('data', [])
+        timestamp = message_body.get('timestamp')
+        rssi = message_body.get('rssi')
 
-            except aiomysql.MySQLError as e:
-                logger.error(f"Error inserting data into MySQL: {e}")
+        # Convert epoch timestamp to human-readable format with timezone
+        local_tz = pytz.timezone('Africa/Johannesburg')
+        human_readable_time = datetime.fromtimestamp(timestamp, local_tz).strftime(
+            '%a %b %d %Y %H:%M:%S GMT%z (South Africa Standard Time)')
+
+        # Extract additional fields from the message
+        cleaned_data = {
+            'routingKey': message.consumer_tag,
+            'deliveryTag': message.delivery_tag,
+            'exchangeType': message.exchange,
+
+            'routingKey': message.routing_key,
+            # First part of routing key
+            'ownerTag': message.routing_key.split('.')[0],
+            # Second part of routing key
+            'projectName': message.routing_key.split('.')[1] if len(message.routing_key.split('.')) > 1 else None,
+            # Third part of routing key
+            'machineMacAddress': message.routing_key.split('.')[2] if len(message.routing_key.split('.')) > 2 else None,
+            # Third part of routing key
+            'type': message.routing_key.split('.')[3] if len(message.routing_key.split('.')) > 3 else None
+        }
+
+        for entry in data_entries:
+            entry_value = entry.get('value')
+
+            # Append cycleTime to cleaned data (convert to seconds)
+            cleaned_data['cycle_time'] = entry_value / \
+                1000  # Convert milliseconds to seconds
+            # Use human-readable timestamp
+            cleaned_data['eventTimeStamp'] = human_readable_time
+            # Rename rssi to signalStrength
+            cleaned_data['signalStrength'] = rssi
+            # Append cycle_completed_timestamp to cleaned data
+            cleaned_data['cycle_completed_timestamp'] = human_readable_time
+
+            await save_data(pool, cleaned_data)
+
+        # Acknowledge the message after saving the data
+        await message.ack()  # Acknowledge the message
+
+    except json.JSONDecodeError:
+        logger.warning("Received message with invalid JSON format")
+        await message.nack()  # Optionally, you can nack the message
+    except Exception as e:
+        logger.error(f"Error processing message: {e}")
+        await message.nack()  # Optionally, you can nack the message
 
 
-async def consume_messages():
+async def consume_messages(pool):  # Accept pool as an argument
     connection = await aio_pika.connect_robust(
         host=RABBITMQ_CONFIG['host'],
         port=RABBITMQ_CONFIG['port'],
@@ -145,33 +139,27 @@ async def consume_messages():
 
         async with queue.iterator() as queue_iter:
             async for message in queue_iter:
-                asyncio.create_task(handle_message(message))
-
-
-async def calculate_servicing_rate():
-    global message_count, current_servicing_rate
-    last_count = 0
-    while True:
-        await asyncio.sleep(1)
-        async with message_count_lock:
-            current_count = message_count
-            messages_per_second = current_count - last_count
-            last_count = current_count
-
-        async with servicing_rate_lock:
-            current_servicing_rate = messages_per_second
-
-        logger.info(f"Servicing Rate: {messages_per_second} msg/s")
+                # Process the message
+                await message_processor(message, pool)
 
 
 async def main():
-    await init_db_pool()
-
-    # Start consumers and rate calculators
-    await asyncio.gather(
-        consume_messages(),
-        calculate_servicing_rate()
+    # Create database connection pool
+    db_pool = await aiomysql.create_pool(
+        host=DB_POOL_CONFIG['host'],
+        user=DB_POOL_CONFIG['user'],
+        password=DB_POOL_CONFIG['password'],
+        db=DB_POOL_CONFIG['db'],
+        minsize=DB_POOL_CONFIG['minsize'],
+        maxsize=DB_POOL_CONFIG['maxsize']
     )
+
+    if db_pool:
+        # Start consuming messages
+        await consume_messages(db_pool)  # Pass db_pool to consume_messages
+    else:
+        logger.error("Exiting due to database connection failure.")
+
 
 if __name__ == '__main__':
     asyncio.run(main())
