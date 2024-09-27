@@ -27,6 +27,34 @@ DB_POOL_CONFIG = {
     'maxsize': 100,
 }
 
+
+async def write_to_db(pool, cleaned_data):
+    async with pool.acquire() as connection:
+        async with connection.cursor() as cursor:
+            # Assuming a table named 'queue_data' with appropriate columns
+            await cursor.execute("""
+                INSERT INTO queue_data (routingKey, deliveryTag, exchangeType, 
+                                           ownerTag, projectName, machineMacAddress, 
+                                           type, cycleTime, eventTimeStamp, 
+                                           signalStrength, cycleCompletedTimestamp)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (
+                cleaned_data['routingKey'],
+                cleaned_data['deliveryTag'],
+                cleaned_data['exchangeType'],
+                cleaned_data['ownerTag'],
+                cleaned_data['projectName'],
+                cleaned_data['machineMacAddress'],
+                cleaned_data['type'],
+                cleaned_data['cycleTime'],
+                cleaned_data['eventTimeStamp'],
+                cleaned_data['signalStrength'],
+                cleaned_data['cycleCompletedTimestamp']
+            ))
+            
+            await connection.commit()
+
+
 async def message_processor(message: aio_pika.IncomingMessage, pool):
     try:
         message_body = json.loads(message.body.decode('utf-8'))
@@ -56,12 +84,17 @@ async def message_processor(message: aio_pika.IncomingMessage, pool):
             cleaned_data['cycleCompletedTimestamp'] = human_readable_time
             logger.info(f"DB: {cleaned_data}")
 
+            # Write to DB and acknowledge message after successful write
+            await write_to_db(pool, cleaned_data)
+            await message.ack()  # Acknowledge the message after successful write
+
     except json.JSONDecodeError:
         logger.warning("Received message with invalid JSON format")
         await message.nack()
     except Exception as e:
         logger.error(f"Error processing message: {e}")
         await message.nack()
+
 
 async def consume_messages(pool):
     connection = await aio_pika.connect_robust(
@@ -80,6 +113,7 @@ async def consume_messages(pool):
         async with queue.iterator() as queue_iter:
             async for message in queue_iter:
                 await message_processor(message, pool)
+
 
 async def main():
     db_pool = await aiomysql.create_pool(
