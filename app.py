@@ -27,6 +27,14 @@ DB_POOL_CONFIG = {
     'maxsize': 100,
 }
 
+# Async connection pool for MySQL
+mysql_pool = None
+
+
+async def init_db_pool():
+    global mysql_pool
+    mysql_pool = await aiomysql.create_pool(**DB_POOL_CONFIG)
+
 
 async def write_to_db(pool, cleaned_data):
     async with pool.acquire() as connection:
@@ -86,7 +94,7 @@ async def message_processor(message: aio_pika.IncomingMessage, pool):
 
         for entry in data_entries:
             entry_value = entry.get('value')
-            logger.info(f"Data ttype: {message.routing_key.split('.')[3]}")
+            logger.info(f"Data type: {message.routing_key.split('.')[3]}")
             # Check if entry_value is a number and routing_key type is 'data'
             if isinstance(entry_value, (int, float)) and message.routing_key.split('.')[3] == 'data':
                 cleaned_data['cycleTime'] = entry_value / 1000
@@ -126,6 +134,7 @@ async def consume_messages(pool):
     async with connection:
         channel = await connection.channel()
         await channel.set_qos(prefetch_count=1000)
+        
         queue = await channel.declare_queue('mqtt', durable=True)
         logger.info("Queue declared, waiting for messages...")
 
@@ -135,19 +144,14 @@ async def consume_messages(pool):
 
 
 async def main():
-    db_pool = await aiomysql.create_pool(
-        host=DB_POOL_CONFIG['host'],
-        user=DB_POOL_CONFIG['user'],
-        password=DB_POOL_CONFIG['password'],
-        db=DB_POOL_CONFIG['db'],
-        minsize=DB_POOL_CONFIG['minsize'],
-        maxsize=DB_POOL_CONFIG['maxsize']
-    )
+    await init_db_pool()
 
-    if db_pool:
-        await consume_messages(db_pool)
+    if mysql_pool:
+        await asyncio.gather(
+            consume_messages(mysql_pool),
+    )
     else:
-        logger.error("Exiting due to database connection failure.")
+        logger.error("DB connection unsuccesful.")
 
 if __name__ == '__main__':
     asyncio.run(main())

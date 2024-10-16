@@ -48,6 +48,27 @@ python app.py
 
 The script will start consuming messages from RabbitMQ, process them, and store the data in MySQL. It will also log the current processing rate every second.
 
+
+Mac OS for setting up a virtual environment:
+## Setting Up a Virtual Environment
+
+To set up a Python virtual environment, run the following commands:
+
+```
+python3 -m venv path/to/venv && source path/to/venv/bin/activate && python3 app.py
+
+
+to install the required packages, run the following command:
+python3 -m pip install xyz
+
+
+to run the script, run the following command:
+python3 app.py
+
+```
+
+Replace `path/to/venv` with your desired virtual environment path and `xyz` with the required packages.
+
 ## Note
 
 Ensure that you have the necessary permissions and network access to connect to both RabbitMQ and MySQL servers as specified in the configuration.
