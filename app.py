@@ -19,10 +19,10 @@ RABBITMQ_CONFIG = {
 }
 
 DB_POOL_CONFIG = {
-    'host': '129.232.204.10',
+    'host': '156.38.148.141',
     'user': 'waresense',
     'password': 'waresense@2024',
-    'db': 'ware-sense',
+    'db': 'waresense',
     'minsize': 1,
     'maxsize': 100,
 }
@@ -147,18 +147,3 @@ async def main():
 
 if __name__ == '__main__':
     asyncio.run(main())
-
-
-
-
-
-
-# 34987aacf4ec
-# machine 0
-# Machine 28
-
-# 34987aabaebc
-
-# Ignore this device:
-
-# 34987aabb3c4
