@@ -21,7 +21,7 @@ async def consume_messages(pool):
 
     async with connection:
         channel = await connection.channel()
-        await channel.set_qos(prefetch_count=10)
+        await channel.set_qos(prefetch_count=1000)
         queue = await channel.declare_queue('mqtt', durable=True)
         logger.info("Queue declared, waiting for messages...")
 

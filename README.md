@@ -152,3 +152,66 @@ Pull requests are welcome. For major changes, please open an issue first to disc
 ## License
 
 [MIT](https://choosealicense.com/licenses/mit/)
+
+
+## Author
+Brandon N Nkawu
+[@Brandon-Online01](https://github.com/Brandon-Online01)
+
+## Background Service Integration
+
+This pipeline is designed to run as a persistent background service on Linux systems, making it ideal for:
+
+- Embedded Linux devices running Ubuntu/Debian
+- IoT gateways and edge computing devices
+- Industrial automation systems
+- Continuous data collection environments
+
+The service is managed through systemd, allowing for:
+- Automatic startup on boot
+- Service monitoring and recovery
+- Resource usage control
+- Proper shutdown handling
+
+### Service Installation
+
+1. Create a systemd service file:
+```bash
+sudo nano /etc/systemd/system/waresense.service
+```
+
+2. Add the following configuration:
+```ini
+[Unit]
+Description=RabbitMQ to MySQL Data Pipeline
+After=network.target rabbitmq-server.service mysql.service
+
+[Service]
+Type=simple
+User=your_service_user
+WorkingDirectory=/path/to/installation
+ExecStart=/path/to/venv/bin/python3 app.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+```
+
+3. Enable and start the service:
+```bash
+sudo systemctl enable waresense.service
+sudo systemctl start waresense.service
+```
+
+### Service Management
+
+Monitor service status:
+```bash
+sudo systemctl status waresense.service
+```
+
+View service logs:
+```bash
+sudo journalctl -u waresense.service
+```
